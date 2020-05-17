@@ -21,9 +21,13 @@ namespace TrayClock
 
             public async Task<Calendar[]> GetCalendarsAsync()
             {
+                if (appointStore == null)
+                {
+                    return new Calendar[0];
+                }
                 var src = await appointStore.FindAppointmentCalendarsAsync().AsTask().ConfigureAwait(false);
                 var dst = new Calendar[src.Count];
-                for(int i = 0;i<src.Count;i++)
+                for (int i = 0; i < src.Count; i++)
                 {
                     var calendar = src[i];
                     dst[i] = new Calendar()
@@ -39,6 +43,10 @@ namespace TrayClock
 
             public async Task<Event[]> GetEventsAsync(Calendar calendar, DateTime startTime, DateTime endTime)
             {
+                if (appointStore == null)
+                {
+                    return new Event[0];
+                }
                 var cal = await appointStore.GetAppointmentCalendarAsync(calendar.id).AsTask().ConfigureAwait(false);
                 var src = await cal.FindAppointmentsAsync(startTime, endTime - startTime).AsTask().ConfigureAwait(false);
                 var dst = new Event[src.Count];

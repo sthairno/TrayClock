@@ -45,6 +45,10 @@ namespace TrayClock
 
             public async Task<Calendar[]> GetCalendarsAsync()
             {
+                if (service == null)
+                {
+                    return new Calendar[0];
+                }
                 CalendarListResource.ListRequest req = service.CalendarList.List();
                 req.ShowDeleted = false;
 
@@ -71,6 +75,10 @@ namespace TrayClock
 
             public async Task<Event[]> GetEventsAsync(Calendar calendar, DateTime startTime, DateTime endTime)
             {
+                if (service == null)
+                {
+                    return new Event[0];
+                }
                 EventsResource.ListRequest request = service.Events.List(calendar.id);
                 request.TimeMin = startTime;
                 request.TimeMax = endTime;
