@@ -4,6 +4,7 @@ using System.Collections.Generic;
 using System.Diagnostics;
 using System.Linq;
 using System.Text;
+using System.Threading;
 using System.Threading.Tasks;
 using System.Windows;
 using System.Windows.Controls;
@@ -45,6 +46,7 @@ namespace TrayClock
         Dictionary<DateTime, List<EventData>> eventLists = new Dictionary<DateTime, List<EventData>>();
         List<Task> taskList = new List<Task>();
         object eventListsLock = new object();
+        SemaphoreSlim calendarsLock = new SemaphoreSlim(1, 1);
 
         public event EventHandler EventsUpdated;
 
@@ -57,7 +59,9 @@ namespace TrayClock
         public List<EventData> GetEventsInRange(DateTime start, DateTime end)
         {
             var list = new List<EventData>();
-            for (var m = start; m <= end; m = m.AddMonths(1))
+            var startMonth = new DateTime(start.Year, start.Month, 1);
+            var endMonth = new DateTime(end.Year, end.Month, 1);
+            for (var m = startMonth; m <= endMonth; m = m.AddMonths(1))
             {
                 list.AddRange(GetEventsInMonth(m).FindAll((e) =>
                 {
@@ -99,8 +103,12 @@ namespace TrayClock
         {
             Task.WaitAll(taskList.ToArray());
             taskList.Clear();
-            calendars = null;
-            eventLists.Clear();
+
+            lock (eventListsLock)
+            {
+                calendars = null;
+                eventLists.Clear();
+            }
         }
 
         private async Task SyncAsync(DateTime month)
@@ -109,10 +117,19 @@ namespace TrayClock
             DateTime monthEnd = monthBegin.AddMonths(1).AddTicks(-1);
             List<EventData> events = new List<EventData>();
 
-            if (calendars == null)
+            await calendarsLock.WaitAsync();
+            try
             {
-                calendars = await service.GetCalendarsAsync().ConfigureAwait(false);
+                if (calendars == null)
+                {
+                    calendars = await service.GetCalendarsAsync().ConfigureAwait(false);
+                }
             }
+            finally
+            {
+                calendarsLock.Release();
+            }
+
             foreach (var calendar in calendars)
             {
                 foreach (var ev in await service.GetEventsAsync(calendar, monthBegin, monthEnd).ConfigureAwait(false))
@@ -133,13 +150,12 @@ namespace TrayClock
             lock (eventListsLock)
             {
                 eventLists[month] = events;
-
             }
 
-            dispatcher.Invoke(() =>
-            {
-                EventsUpdated(this, EventArgs.Empty);
-            });
+            _ = dispatcher.BeginInvoke(() =>
+              {
+                  EventsUpdated(this, EventArgs.Empty);
+              });
         }
     }
     /// <summary>
@@ -269,7 +285,6 @@ namespace TrayClock
             DateTime calendarBegin = monthBegin.AddDays(-(int)monthBegin.DayOfWeek);
             DateTime monthEnd = monthBegin.AddMonths(1).AddTicks(-1);
             DateTime calendarEnd = monthEnd.AddDays(6 - (int)monthEnd.DayOfWeek);
-
             {
                 DateTime cursorDate = calendarBegin;
 
