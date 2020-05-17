@@ -94,8 +94,6 @@ namespace TrayClock
                     {
                         var start = new DateTime(int.Parse(ev.Start.Date.Substring(0, 4)), int.Parse(ev.Start.Date.Substring(5, 2)), int.Parse(ev.Start.Date.Substring(8, 2)));
                         var end = new DateTime(int.Parse(ev.End.Date.Substring(0, 4)), int.Parse(ev.End.Date.Substring(5, 2)), int.Parse(ev.End.Date.Substring(8, 2)));
-                        Console.WriteLine($"Start:{start}");
-                        Console.WriteLine($"End:{end}");
                         dst[i].startTime = start;
                         dst[i].duration = end.AddSeconds(-1) - start;
                     }
