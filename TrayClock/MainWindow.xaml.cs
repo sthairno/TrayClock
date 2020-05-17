@@ -184,7 +184,7 @@ namespace TrayClock
                 {
                     AppName = "TrayClock",
                     SecretsPath = "credentials.json",
-                    TokenPath = "token.json"
+                    TokenPath = Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData)+"\\TrayClock\\token"
                 };
                 service.SetupAsync();
 
