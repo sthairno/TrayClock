@@ -16,7 +16,6 @@ using System.Windows.Media.Imaging;
 using System.Windows.Navigation;
 using System.Windows.Shapes;
 using System.Windows.Threading;
-using Windows.ApplicationModel.Appointments;
 
 namespace TrayClock
 {
@@ -26,14 +25,123 @@ namespace TrayClock
         public ReactiveProperty<DateTime> CurrentTime { get; } = new ReactiveProperty<DateTime>(DateTime.Now);
     }
 
-    struct AppointmentData
+    struct EventData
     {
         public Color color;
         public string subject;
+        public string description;
         public DateTime startTime;
         public TimeSpan duration;
+        public bool allDay;
+        public Uri uri;
     }
 
+    class EventManager
+    {
+        Calendar.ICalendarService service;
+        Dispatcher dispatcher;
+
+        Calendar.Calendar[] calendars = null;
+        Dictionary<DateTime, List<EventData>> eventLists = new Dictionary<DateTime, List<EventData>>();
+        List<Task> taskList = new List<Task>();
+        object eventListsLock = new object();
+
+        public event EventHandler EventsUpdated;
+
+        public EventManager(Calendar.ICalendarService service, Dispatcher dispatcher)
+        {
+            this.service = service;
+            this.dispatcher = dispatcher;
+        }
+
+        public List<EventData> GetEventsInRange(DateTime start, DateTime end)
+        {
+            var list = new List<EventData>();
+            for (var m = start; m <= end; m = m.AddMonths(1))
+            {
+                list.AddRange(GetEventsInMonth(m).FindAll((e) =>
+                {
+                    return (start <= e.startTime || start <= e.startTime + e.duration) &&
+                            e.startTime <= end;
+                }));
+            }
+            return list;
+        }
+
+        public List<EventData> GetEventsInMonth(DateTime month)
+        {
+            month = new DateTime(month.Year, month.Month, 1);
+            List<EventData> list;
+            bool hasVal = false;
+
+            lock (eventListsLock)
+            {
+                hasVal = eventLists.TryGetValue(month, out list);
+                if (!hasVal)
+                {
+                    eventLists.Add(month, new List<EventData>());
+                }
+            }
+
+            if (hasVal)
+            {
+                return list;
+            }
+            else
+            {
+                var task = SyncAsync(month);
+                taskList.Add(task);
+                return new List<EventData>();
+            }
+        }
+
+        public void ClearCache()
+        {
+            Task.WaitAll(taskList.ToArray());
+            taskList.Clear();
+            calendars = null;
+            eventLists.Clear();
+        }
+
+        private async Task SyncAsync(DateTime month)
+        {
+            DateTime monthBegin = new DateTime(month.Year, month.Month, 1);
+            DateTime monthEnd = monthBegin.AddMonths(1).AddTicks(-1);
+            List<EventData> events = new List<EventData>();
+
+            if (calendars == null)
+            {
+                calendars = await service.GetCalendarsAsync().ConfigureAwait(false);
+            }
+            foreach (var calendar in calendars)
+            {
+                foreach (var ev in await service.GetEventsAsync(calendar, monthBegin, monthEnd).ConfigureAwait(false))
+                {
+                    events.Add(new EventData()
+                    {
+                        subject = ev.subject,
+                        description = ev.description,
+                        color = calendar.color,
+                        startTime = ev.startTime,
+                        duration = ev.duration,
+                        allDay = ev.allDay,
+                        uri = ev.uri
+                    });
+                }
+            }
+
+            lock (eventListsLock)
+            {
+                eventLists[month] = events;
+
+            }
+
+            dispatcher.Invoke(() =>
+            {
+                EventsUpdated(this, EventArgs.Empty);
+            });
+        }
+    }
     /// <summary>
     /// Interaction logic for MainWindow.xaml
     /// </summary>
@@ -44,13 +152,8 @@ namespace TrayClock
 
         private MainWindowData data = new MainWindowData();
         private DispatcherTimer updateTimer;
-        private AppointmentStore appointStore;
-        private List<AppointmentData> appointments = new List<AppointmentData>();
-
-        private DateTime calendarBeginDate;//カレンダー始めの日
-        private DateTime monthBeginDate;//月始めの日
-        private DateTime monthEndDate;//月終わりの日
-        private DateTime calendarEndDate;//カレンダー終わりの日
+        private Calendar.ICalendarService service;
+        private EventManager eventManager;
 
         public MainWindow()
         {
@@ -58,9 +161,21 @@ namespace TrayClock
 
             Loaded += (s, e) =>
             {
-
                 HwndSource source = HwndSource.FromHwnd(new WindowInteropHelper(this).Handle);
                 source.AddHook(new HwndSourceHook(WndProc));
+
+                service = new Calendar.GoogleCalenderService()
+                {
+                    AppName = "TrayClock",
+                    SecretsPath = "credentials.json",
+                    TokenPath = "token.json"
+                };
+                service.SetupAsync();
+
+                eventManager = new EventManager(service, this.Dispatcher);
+                eventManager.EventsUpdated += Manager_EventsUpdated;
+
+                UpdateCalendar();
             };
 
             DataContext = data;
@@ -69,8 +184,11 @@ namespace TrayClock
                 Interval = new TimeSpan(0, 0, 0, 0, 100)
             };
             updateTimer.Tick += UpdateTimer_Tick;
+        }
 
-            appointStore = AppointmentManager.RequestStoreAsync(AppointmentStoreAccessType.AllCalendarsReadOnly).AsTask().Result;
+        private void Manager_EventsUpdated(object sender, EventArgs e)
+        {
+            UpdateCalendar();
         }
 
         public void Window_Show()
@@ -116,15 +234,6 @@ namespace TrayClock
             Left = SystemParameters.WorkArea.Right - Width + 1;
         }
 
-        private void ChangeCalendarState()
-        {
-            DateTime month = data.CalendarMonth.Value;
-            monthBeginDate = new DateTime(month.Year, month.Month, 1);
-            calendarBeginDate = monthBeginDate.AddDays(-(int)monthBeginDate.DayOfWeek);
-            monthEndDate = monthBeginDate.AddMonths(1).AddDays(-1);
-            calendarEndDate = monthEndDate.AddDays(7 - (int)monthEndDate.DayOfWeek).AddTicks(-1);
-        }
-
         private void UpdateTimer_Tick(object sender, EventArgs e)
         {
             var prev = data.CurrentTime.Value.Day;
@@ -135,12 +244,34 @@ namespace TrayClock
             }
         }
 
+        private string DateTimeToString(DateTime time, bool allDay)
+        {
+            string str = "";
+            if (time.Year != DateTime.Today.Year)
+            {
+                str += $"{time:yyyy/MM/dd}";
+            }
+            else
+            {
+                str += $"{time:MM/dd}";
+            }
+            if (!allDay)
+            {
+                str += $" {time:H:mm}";
+            }
+            return str;
+        }
+
         void UpdateCalendar()
         {
             DateTime today = DateTime.Today;
+            DateTime monthBegin = new DateTime(data.CalendarMonth.Value.Year, data.CalendarMonth.Value.Month, 1);
+            DateTime calendarBegin = monthBegin.AddDays(-(int)monthBegin.DayOfWeek);
+            DateTime monthEnd = monthBegin.AddMonths(1).AddTicks(-1);
+            DateTime calendarEnd = monthEnd.AddDays(6 - (int)monthEnd.DayOfWeek);
 
             {
-                DateTime cursorDate = calendarBeginDate;
+                DateTime cursorDate = calendarBegin;
 
                 CalendarGrid.RowDefinitions.Clear();
                 CalendarGrid.Children.Clear();
@@ -179,7 +310,7 @@ namespace TrayClock
                             Text = cursorDate.Day.ToString()
                         };
 
-                        if (cursorDate < monthBeginDate || cursorDate > monthEndDate)
+                        if (cursorDate < monthBegin || cursorDate > monthEnd)
                         {
                             label.Style = (Style)Resources["DisabledLabel"];
                         }
@@ -200,29 +331,30 @@ namespace TrayClock
                         CalendarGrid.RowDefinitions.Add(new RowDefinition() { Height = new GridLength(1, GridUnitType.Star) });
                         row++;
                     }
-                } while (cursorDate <= calendarEndDate);
+                } while (cursorDate <= calendarEnd);
             }
 
             {
+                var appointments = eventManager.GetEventsInRange(calendarBegin, calendarEnd);
                 appointments.Sort((a, b) => (int)(b.duration - a.duration).Ticks);//予定の長さを降順でソート
                 appointments.Sort((a, b) => (int)(a.startTime - b.startTime).Ticks);//予定の早さを降順でソート
 
-                int cellColCnt = (calendarEndDate - calendarBeginDate).Days + 1;
+                int cellColCnt = (calendarEnd - calendarBegin).Days + 1;
                 bool[,] usedCell = new bool[cellColCnt, calendarAppointmentRowCnt];
 
                 foreach (var appoint in appointments)
                 {
                     var startTime = appoint.startTime;
                     var endTime = (appoint.startTime + appoint.duration).AddTicks(-1);
-                    if ((startTime < calendarBeginDate && endTime < calendarBeginDate) ||
-                        (startTime > calendarEndDate))
+                    if ((startTime < calendarBegin && endTime < calendarBegin) ||
+                        (startTime > calendarEnd))
                     {
                         continue;
                     }
                     var firstDate = startTime - startTime.TimeOfDay;
                     var lastDate = endTime - endTime.TimeOfDay;
-                    var cellCol = Math.Max((firstDate - calendarBeginDate).Days, 0);
-                    var cellWidth = Math.Min((lastDate - new DateTime(Math.Max(firstDate.Ticks, calendarBeginDate.Ticks))).Days + 1, cellColCnt - cellCol);
+                    var cellCol = Math.Max((firstDate - calendarBegin).Days, 0);
+                    var cellWidth = Math.Min((lastDate - new DateTime(Math.Max(firstDate.Ticks, calendarBegin.Ticks))).Days + 1, cellColCnt - cellCol);
                     int? cellRow = null;
                     for (int r = 0; r < calendarAppointmentRowCnt; r++)
                     {
@@ -251,13 +383,27 @@ namespace TrayClock
                         for (int c = 0; c < cellWidth;)
                         {
                             int width = Math.Min(7 - column, cellWidth - c);
+                            string toolTipText = appoint.subject;
+                            if (!(appoint.allDay && cellWidth == 1))
+                            {
+                                toolTipText += $"\n{DateTimeToString(appoint.startTime, appoint.allDay)} - {DateTimeToString(appoint.startTime + appoint.duration, appoint.allDay)}";
+                            }
                             TextBlock textBlock = new TextBlock()
                             {
                                 Text = appoint.subject,
                                 Background = new SolidColorBrush(appoint.color),
+                                Foreground = new SolidColorBrush(((((appoint.color.R * 299) + (appoint.color.G * 587) + (appoint.color.B * 114)) / 1000) < 128) ? Colors.White : Colors.Black),
                                 Style = (Style)Resources["AppointmentLabel"],
-                                ToolTip = appoint.subject
+                                ToolTip = toolTipText
                             };
+                            if (appoint.uri != null)
+                            {
+                                textBlock.PreviewMouseDown += (s, e) =>
+                                {
+                                    Console.WriteLine(appoint.uri.ToString());
+                                    //Process.Start(appoint.uri.ToString());
+                                };
+                            }
                             Grid.SetRow(textBlock, row * (calendarAppointmentRowCnt + 2) + 3 + cellRow.Value);
                             Grid.SetColumn(textBlock, column);
                             Grid.SetColumnSpan(textBlock, width);
@@ -271,105 +417,36 @@ namespace TrayClock
             }
         }
 
-        private async void NextMonthButton_Click(object sender, RoutedEventArgs e)
+        private void NextMonthButton_Click(object sender, RoutedEventArgs e)
         {
             data.CalendarMonth.Value = data.CalendarMonth.Value.AddMonths(1);
-            ChangeCalendarState();
-            await UpdateAppointmentsAsync(calendarBeginDate, calendarEndDate - calendarBeginDate);
             UpdateCalendar();
         }
-        private async void PrevMonthButton_Click(object sender, RoutedEventArgs e)
+        private void PrevMonthButton_Click(object sender, RoutedEventArgs e)
         {
             data.CalendarMonth.Value = data.CalendarMonth.Value.AddMonths(-1);
-            ChangeCalendarState();
-            await UpdateAppointmentsAsync(calendarBeginDate, calendarEndDate - calendarBeginDate);
             UpdateCalendar();
         }
-        private async void CurrentMonthButton_Click(object sender, RoutedEventArgs e)
+        private void CurrentMonthButton_Click(object sender, RoutedEventArgs e)
         {
             data.CalendarMonth.Value = DateTime.Today;
-            ChangeCalendarState();
-            await UpdateAppointmentsAsync(calendarBeginDate, calendarEndDate - calendarBeginDate);
             UpdateCalendar();
         }
-        private async void UpdateCalendarButton_Click(object sender, RoutedEventArgs e)
+        private void UpdateCalendarButton_Click(object sender, RoutedEventArgs e)
         {
-            await UpdateAppointmentsAsync(calendarBeginDate, calendarEndDate - calendarBeginDate);
+            eventManager.ClearCache();
             UpdateCalendar();
-        }
-
-        //appointmentsを更新
-        private async Task UpdateAppointmentsAsync(DateTimeOffset rangeStart, TimeSpan rangeLength)
-        {
-            if (appointStore == null)
-            {
-                return;
-            }
-            appointments.Clear();
-            var calendars = await appointStore.FindAppointmentCalendarsAsync();
-            foreach (var calendar in calendars)
-            {
-                if (!calendar.IsHidden)
-                {
-                    Color calendarCol = Color.FromArgb(calendar.DisplayColor.A, calendar.DisplayColor.R, calendar.DisplayColor.G, calendar.DisplayColor.B);
-                    foreach (var src in await calendar.FindAppointmentsAsync(rangeStart, rangeLength))
-                    {
-                        bool isCanceled = src.IsCanceledMeeting;
-                        if (src.Subject.StartsWith(teamsAppointmentCanceled))
-                        {
-                            src.Subject = src.Subject.Remove(0, teamsAppointmentCanceled.Length);
-                            isCanceled = true;
-                        }
-                        if (isCanceled)
-                        {
-                            continue;
-                        }
-                        AppointmentData dst = new AppointmentData()
-                        {
-                            subject = src.Subject,
-                            color = calendarCol,
-                            startTime = src.StartTime.DateTime,
-                            duration = src.Duration
-                        };
-                        appointments.Add(dst);
-                    }
-                }
-            }
         }
 
         private void DayChanged()
         {
-            ChangeCalendarState();
+            eventManager.ClearCache();
             UpdateCalendar();
         }
 
-        private async void AppointStore_StoreChanged(AppointmentStore sender, AppointmentStoreChangedEventArgs args)
-        {
-            ChangeCalendarState();
-            await UpdateAppointmentsAsync(calendarBeginDate, calendarEndDate - calendarBeginDate);
-        }
-
-        private async void AcrylicWindow_IsVisibleChanged(object sender, DependencyPropertyChangedEventArgs e)
+        private void AcrylicWindow_IsVisibleChanged(object sender, DependencyPropertyChangedEventArgs e)
         {
             updateTimer.IsEnabled = IsVisible;
-            if (IsVisible)
-            {
-                ChangeCalendarState();
-                UpdateCalendar();
-                await UpdateAppointmentsAsync(calendarBeginDate, calendarEndDate - calendarBeginDate);
-                UpdateCalendar();
-                if (appointStore != null)
-                {
-                    appointStore.StoreChanged += AppointStore_StoreChanged;
-                }
-            }
-            else
-            {
-                if (appointStore != null)
-                {
-                    appointStore.StoreChanged -= AppointStore_StoreChanged;
-                }
-            }
         }
 
         private void AcrylicWindow_SizeChanged(object sender, SizeChangedEventArgs e)

@@ -1,13 +1,14 @@
 <Project Sdk="Microsoft.NET.Sdk.WindowsDesktop">
 
   <PropertyGroup>
-    <OutputType>WinExe</OutputType>
+    <OutputType>Exe</OutputType>
     <TargetFramework>netcoreapp3.1</TargetFramework>
     <UseWPF>true</UseWPF>
   </PropertyGroup>
 
   <ItemGroup>
     <PackageReference Include="FluentWPF" Version="0.8.0" />
+    <PackageReference Include="Google.Apis.Calendar.v3" Version="1.45.0.1949" />
     <PackageReference Include="Microsoft.Windows.SDK.Contracts" Version="10.0.18362.2005" />
     <PackageReference Include="ReactiveProperty" Version="6.2.0" />
   </ItemGroup>
