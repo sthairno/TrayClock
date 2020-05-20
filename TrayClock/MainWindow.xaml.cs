@@ -213,6 +213,7 @@ namespace TrayClock
         {
             Topmost = true;
             Topmost = false;
+            Activate();
             WindowSetPos();
             Show();
         }
