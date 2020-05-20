@@ -2,6 +2,7 @@ using Reactive.Bindings;
 using System;
 using System.Collections.Generic;
 using System.Diagnostics;
+using System.IO;
 using System.Linq;
 using System.Text;
 using System.Threading;
@@ -163,8 +164,9 @@ namespace TrayClock
     /// </summary>
     public partial class MainWindow
     {
+        const string teamsCanceledText = "Canceled: ";
         const int calendarAppointmentRowCnt = 4;
-        const string teamsAppointmentCanceled = "Canceled: ";
+        string appFolder = Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData) + "\\TrayClock";
 
         private MainWindowData data = new MainWindowData();
         private DispatcherTimer updateTimer;
@@ -183,8 +185,8 @@ namespace TrayClock
                 service = new Calendar.GoogleCalenderService()
                 {
                     AppName = "TrayClock",
-                    SecretsPath = "credentials.json",
-                    TokenPath = Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData)+"\\TrayClock\\token"
+                    SecretsPath = appFolder + "\\credentials.json",
+                    TokenPath = appFolder + "\\token"
                 };
                 service.SetupAsync();
 
@@ -351,6 +353,7 @@ namespace TrayClock
 
             {
                 var appointments = eventManager.GetEventsInRange(calendarBegin, calendarEnd);
+                appointments = appointments.Where((e) => { return !e.subject.StartsWith(teamsCanceledText); }).ToList();
                 appointments.Sort((a, b) => (int)(b.duration - a.duration).Ticks);//予定の長さを降順でソート
                 appointments.Sort((a, b) => (int)(a.startTime - b.startTime).Ticks);//予定の早さを降順でソート
 
@@ -415,8 +418,9 @@ namespace TrayClock
                             {
                                 textBlock.PreviewMouseDown += (s, e) =>
                                 {
-                                    Console.WriteLine(appoint.uri.ToString());
-                                    //Process.Start(appoint.uri.ToString());
+                                    string url = appoint.uri.ToString();
+                                    url = url.Replace("&", "^&");
+                                    Process.Start(new ProcessStartInfo("cmd", $"/c start {url}") { CreateNoWindow = true });
                                 };
                             }
                             Grid.SetRow(textBlock, row * (calendarAppointmentRowCnt + 2) + 3 + cellRow.Value);
