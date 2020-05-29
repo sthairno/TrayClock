@@ -137,7 +137,7 @@ namespace TrayClock
                 {
                     events.Add(new EventData()
                     {
-                        subject = ev.subject,
+                        subject = ev.subject ?? "(タイトルなし)",
                         description = ev.description,
                         color = calendar.color,
                         startTime = ev.startTime,
