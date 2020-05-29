@@ -355,7 +355,7 @@ namespace TrayClock
             {
                 var appointments = eventManager.GetEventsInRange(calendarBegin, calendarEnd);
                 appointments = appointments.Where((e) => { return !e.subject.StartsWith(teamsCanceledText); }).ToList();
-                appointments.Sort((a, b) => a.duration.CompareTo(b.duration));//予定の長さを降順でソート
+                appointments.Sort((a, b) => b.duration.CompareTo(a.duration));//予定の長さを降順でソート
                 appointments.Sort((a, b) => a.startTime.CompareTo(b.startTime));//予定の早さを降順でソート
 
                 int cellColCnt = (calendarEnd - calendarBegin).Days + 1;
